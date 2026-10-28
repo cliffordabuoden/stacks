@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Undo/Redo Editor – Stack Demo</title>
+<style>
+:root{--bg:#faf8f5;--card:#fff;--ink:#1f1d1a;--mute:#6b665e;--line:#e4dfd6;--acc:#2f6f5e;--acc2:#b4562c;--top:#e3f1ec;--top2:#f8e7de;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171614;--card:#222120;--ink:#efece6;--mute:#9a958c;--line:#3a3835;--acc:#6fc2a9;--acc2:#e69a74;--top:#1f3a32;--top2:#442a1d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#171614;--card:#222120;--ink:#efece6;--mute:#9a958c;--line:#3a3835;--acc:#6fc2a9;--acc2:#e69a74;--top:#1f3a32;--top2:#442a1d;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px 16px 40px}
+main{max-width:860px;margin:0 auto}
+h1{font-size:1.4rem;margin:0 0 4px}
+p.sub{margin:0 0 16px;color:var(--mute);font-size:.92rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+textarea{width:100%;min-height:130px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit;background:var(--bg);color:var(--ink)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+button{font:inherit;font-weight:600;padding:8px 16px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.undo{background:var(--acc);color:var(--bg);border-color:var(--acc)}
+button.redo{background:var(--acc2);color:var(--bg);border-color:var(--acc2)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.hint{color:var(--mute);font-size:.8rem;margin-left:auto}
+.stacks{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+@media (max-width:560px){.stacks{grid-template-columns:1fr}}
+.stack h2{font-size:1rem;margin:0 0 2px}
+.stack .meta{font-size:.8rem;color:var(--mute);margin-bottom:8px}
+.items{display:flex;flex-direction:column;gap:6px;min-height:60px}
+.item{border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item.top{border-color:var(--acc);background:var(--top)}
+.redo-stack .item.top{border-color:var(--acc2);background:var(--top2)}
+.tag{font-size:.65rem;font-weight:700;letter-spacing:.05em;margin-right:6px;color:var(--mute)}
+.empty{color:var(--mute);font-size:.85rem;font-style:italic;padding:6px 2px}
+#log{margin:8px 0 0;padding:0;list-style:none;font:.82rem/1.6 ui-monospace,Menlo,Consolas,monospace;color:var(--mute)}
+#log li:first-child{color:var(--ink)}
+h3{margin:0;font-size:.95rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>Undo/Redo Editor</h1>
+  <p class="sub">Type below. Each pause in typing pushes a snapshot onto the undo stack. Watch the stacks change as you undo and redo.</p>
+
+  <div class="card">
+    <textarea id="editor" placeholder="Start typing…" aria-label="Editor"></textarea>
+    <div class="bar">
+      <button id="undoBtn" class="undo">↶ Undo</button>
+      <button id="redoBtn" class="redo">Redo ↷</button>
+      <button id="resetBtn">Reset</button>
+      <span class="hint">Ctrl/⌘+Z · Ctrl/⌘+Y</span>
+    </div>
+  </div>
+
+  <div class="stacks">
+    <section class="card stack">
+      <h2>Undo stack</h2>
+      <div class="meta" id="undoMeta"></div>
+      <div class="items" id="undoItems"></div>
+    </section>
+    <section class="card stack redo-stack">
+      <h2>Redo stack</h2>
+      <div class="meta" id="redoMeta"></div>
+      <div class="items" id="redoItems"></div>
+    </section>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <h3>Operation log</h3>
+    <ul id="log"></ul>
+  </div>
+</main>
+
+<script>
+// ---- Stack data structure ----
+class Stack {
+  constructor(){ this.items = []; }
+  push(x){ this.items.push(x); }
+  pop(){ return this.items.pop(); }       // removes and returns the top
+  peek(){ return this.items[this.items.length - 1]; }
+  isEmpty(){ return this.items.length === 0; }
+  size(){ return this.items.length; }
+  clear(){ this.items = []; }
+}
+
+// ---- Editor state ----
+const undoStack = new Stack();
+const redoStack = new Stack();
+let current = "";
+let timer = null;
+const logLines = [];
+
+const $ = id => document.getElementById(id);
+const editor = $("editor");
+
+function log(msg){
+  logLines.unshift(msg);
+  if (logLines.length > 7) logLines.pop();
+  const ul = $("log");
+  ul.innerHTML = "";
+  logLines.forEach(l => { const li = document.createElement("li"); li.textContent = l; ul.appendChild(li); });
+}
+
+const preview = s => s === "" ? "(empty)" : (s.length > 34 ? s.slice(0, 34).replace(/\n/g, " ") + "…" : s.replace(/\n/g, " "));
+
+// Save a snapshot if the text changed
+function commit(){
+  clearTimeout(timer); timer = null;
+  const text = editor.value;
+  if (text === current) return;
+  undoStack.push(current);           // PUSH previous state
+  current = text;
+  const cleared = redoStack.size();
+  redoStack.clear();                 // a new edit invalidates redo history
+  log("PUSH “" + preview(undoStack.peek()) + "” → undo" + (cleared ? " · redo cleared" : ""));
+  render();
+}
+
+function undo(){
+  commit();
+  if (undoStack.isEmpty()) return;
+  redoStack.push(current);           // current state goes to redo
+  current = undoStack.pop();         // POP the previous state
+  editor.value = current;
+  log("UNDO: POP undo → PUSH redo");
+  render();
+}
+
+function redo(){
+  commit();
+  if (redoStack.isEmpty()) return;
+  undoStack.push(current);
+  current = redoStack.pop();
+  editor.value = current;
+  log("REDO: POP redo → PUSH undo");
+  render();
+}
+
+function reset(){
+  clearTimeout(timer);
+  undoStack.clear(); redoStack.clear();
+  current = ""; editor.value = "";
+  logLines.length = 0;
+  log("RESET: both stacks emptied");
+  render();
+}
+
+function drawStack(stack, itemsEl, metaEl){
+  itemsEl.innerHTML = "";
+  metaEl.textContent = "Size: " + stack.size() + (stack.isEmpty() ? "" : " · Top: “" + preview(stack.peek()) + "”");
+  if (stack.isEmpty()) {
+    const d = document.createElement("div");
+    d.className = "empty"; d.textContent = "Empty – nothing to " + (stack === undoStack ? "undo" : "redo");
+    itemsEl.appendChild(d); return;
+  }
+  [...stack.items].reverse().forEach((s, i) => {
+    const d = document.createElement("div");
+    d.className = "item" + (i === 0 ? " top" : "");
+    if (i === 0) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "TOP"; d.appendChild(t); }
+    d.appendChild(document.createTextNode(preview(s)));
+    itemsEl.appendChild(d);
+  });
+}
+
+function render(){
+  drawStack(undoStack, $("undoItems"), $("undoMeta"));
+  drawStack(redoStack, $("redoItems"), $("redoMeta"));
+  $("undoBtn").disabled = undoStack.isEmpty() && editor.value === current;
+  $("redoBtn").disabled = redoStack.isEmpty();
+}
+
+editor.addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(commit, 600);
+  $("undoBtn").disabled = false;
+});
+$("undoBtn").onclick = undo;
+$("redoBtn").onclick = redo;
+$("resetBtn").onclick = reset;
+document.addEventListener("keydown", e => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); }
+});
+
+log("Ready: both stacks empty");
+render();
+</script>
+</body>
+</html>
